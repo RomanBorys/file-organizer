@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { promisify } from 'util';
-import { pipeline } from 'stream/promises';
 
 const readdir = promisify(fs.readdir);
 const stat = promisify(fs.stat);
@@ -14,7 +13,7 @@ export class DuplicateFinder extends EventEmitter {
     this.fileHashes = new Map();
   }
 
-  async findDuplicates(directory) {
+  async find(directory) {
     try {
       const files = await this._getAllFiles(directory);
       const totalFiles = files.length;
@@ -23,25 +22,49 @@ export class DuplicateFinder extends EventEmitter {
       for (const file of files) {
         try {
           const hash = await this._hashFile(file);
-          if (!this.fileHashes.has(hash)) this.fileHashes.set(hash, []);
+
+          if (!this.fileHashes.has(hash)) {
+            this.fileHashes.set(hash, []);
+          }
+
           this.fileHashes.get(hash).push(file);
 
           processed++;
-          this.emit('file-processed', { current: processed, total: totalFiles, file });
+          this.emit('file-processed', {
+            current: processed,
+            total: totalFiles,
+            file
+          });
+
         } catch (err) {
           this.emit('file-error', { file, error: err });
         }
       }
 
-      const duplicates = [];
+      const groups = [];
+      let totalWasted = 0;
+
       for (const [hash, paths] of this.fileHashes.entries()) {
         if (paths.length > 1) {
           const size = (await stat(paths[0])).size;
-          duplicates.push({ hash, paths, size });
+          const wasted = (paths.length - 1) * size;
+
+          totalWasted += wasted;
+
+          groups.push({
+            hash,
+            files: paths,
+            size,
+            wasted
+          });
         }
       }
 
-      this.emit('duplicates-found', duplicates);
+      this.emit('duplicates-found', {
+        groups,
+        totalWasted
+      });
+
     } catch (err) {
       this.emit('error', err);
     }
@@ -50,14 +73,17 @@ export class DuplicateFinder extends EventEmitter {
   async _getAllFiles(dir) {
     let results = [];
     const list = await readdir(dir, { withFileTypes: true });
+
     for (const entry of list) {
       const fullPath = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
         results = results.concat(await this._getAllFiles(fullPath));
       } else if (entry.isFile()) {
         results.push(fullPath);
       }
     }
+
     return results;
   }
 

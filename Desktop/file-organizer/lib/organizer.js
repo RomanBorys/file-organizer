@@ -50,7 +50,7 @@ export class Organizer extends EventEmitter {
         }
       }
 
-      this.emit('organize-complete', { summary });
+      this.emit('organize-complete', summary);
     } catch (err) {
       this.emit('error', err);
     }

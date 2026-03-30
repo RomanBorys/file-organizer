@@ -50,6 +50,13 @@ program
       console.log(`\nНайстаріший файл: ${path.basename(stats.oldest.path)} (${stats.oldest.age} днів)`);
     });
 
+    scanner.on('error', (err) => {
+      if (err.code === 'ENOENT') console.error('Помилка: директорія не знайдена');
+      else if (err.code === 'EACCES') console.error('Помилка: доступ заборонено');
+      else console.error(`Помилка сканування: ${err.message}`);
+      process.exit(1);
+    });
+
     try {
       await scanner.scan(directory);
     } catch (err) {
@@ -69,13 +76,19 @@ program
       process.stdout.write(`\rОброблено файлів: ${current}/${total} (${file})`);
     });
 
-    finder.on('duplicates-found', (groups) => {
+    finder.on('duplicates-found', ({ groups, totalWasted }) => {
       console.log(`\n\nЗнайдено ${groups.length} груп дублікатів:`);
       groups.forEach((g, i) => {
-        console.log(`\nГрупа ${i + 1} (${g.paths.length} копії, ${g.size} байт кожна)`);
+        console.log(`\nГрупа ${i + 1} (${g.paths.length} копії, ${g.size} байт кожна, Wasted: ${g.size * (g.paths.length - 1)} байт)`);
         console.log(`  SHA-256: ${g.hash}`);
         g.paths.forEach((f) => console.log(`  📄 ${f}`));
       });
+      console.log(`\nЗагальний wasted space: ${totalWasted} байт`);
+    });
+
+    finder.on('error', (err) => {
+      console.error(`Помилка пошуку дублікатів: ${err.message}`);
+      process.exit(1);
     });
 
     try {
@@ -98,12 +111,17 @@ program
       process.stdout.write(`\rКопіювання: ${file} → ${targetPath} `);
     });
 
-    organizer.on('copy-complete', ({ summary }) => {
+    organizer.on('organize-complete', ({ summary }) => {
       console.log('\n\nКопіювання завершено!');
       console.log('Статистика по категоріях:');
       for (const [category, count] of Object.entries(summary)) {
         console.log(`  ${category}: ${count} файлів`);
       }
+    });
+
+    organizer.on('error', (err) => {
+      console.error(`Помилка організації: ${err.message}`);
+      process.exit(1);
     });
 
     try {
@@ -123,22 +141,31 @@ program
   .action(async (directory, options) => {
     const cleanup = new Cleanup();
 
-    cleanup.on('file-found', ({ file, size, mtime }) => {
-      process.stdout.write(`\rЗнайдено файл для видалення: ${file} (${size} байт)`);
+    cleanup.on('file-found', ({ path: file, size, mtime, ageDays }) => {
+      process.stdout.write(`\rЗнайдено файл для видалення: ${file} (${size} байт, ${ageDays} днів)`);
     });
 
-    cleanup.on('file-deleted', ({ file, current, total }) => {
+    cleanup.on('file-deleted', ({ path: file, current, total }) => {
       process.stdout.write(`\rВидалено файл: ${file} (${current}/${total})`);
     });
 
-    cleanup.on('cleanup-complete', ({ files, deleted }) => {
+    cleanup.on('cleanup-complete', ({ files, deletedCount, confirm }) => {
       console.log(`\n\nОчищення завершено!`);
       console.log(`Знайдено ${files.length} файлів для видалення`);
-      console.log(`Видалено ${deleted} файлів`);
+      console.log(`Видалено ${deletedCount} файлів`);
+      if (!confirm) console.log(`(Dry run, файли не видалено)`);
+    });
+
+    cleanup.on('error', (err) => {
+      console.error(`Помилка очищення: ${err.message}`);
+      process.exit(1);
     });
 
     try {
-      await cleanup.clean(directory, parseInt(options.olderThan, 10), options.confirm || false);
+      await cleanup.run(directory, {
+        olderThan: parseInt(options.olderThan, 10),
+        confirm: options.confirm || false
+      });
     } catch (err) {
       console.error(`Помилка очищення: ${err.message}`);
       process.exit(1);

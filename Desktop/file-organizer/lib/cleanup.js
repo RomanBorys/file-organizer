@@ -7,40 +7,49 @@ export class Cleanup extends EventEmitter {
     super();
   }
 
-  async clean(directory, olderThanDays = 90, confirm = false) {
+  async run(directory, { olderThan = 90, confirm = false } = {}) {
     try {
       const files = await this._getAllFiles(directory);
       const now = Date.now();
-      const threshold = olderThanDays * 24 * 60 * 60 * 1000;
+      const threshold = olderThan * 24 * 60 * 60 * 1000;
       const oldFiles = [];
 
       for (const file of files) {
         try {
           const stats = await fs.promises.stat(file);
-          const age = now - stats.mtime.getTime();
-          if (age > threshold) {
-            oldFiles.push({ file, size: stats.size, mtime: stats.mtime });
-            this.emit('file-found', { file, size: stats.size, mtime: stats.mtime });
+          const ageDays = Math.floor((now - stats.mtime.getTime()) / (1000 * 60 * 60 * 24));
+
+          if (ageDays > olderThan) {
+            const fileInfo = { path: file, size: stats.size, mtime: stats.mtime, ageDays };
+            oldFiles.push(fileInfo);
+            this.emit('file-found', fileInfo);
           }
+
         } catch (err) {
           this.emit('file-error', { file, error: err });
         }
       }
 
+      let deletedCount = 0;
+
       if (confirm) {
-        let deleted = 0;
         for (const f of oldFiles) {
           try {
-            await fs.promises.unlink(f.file);
-            deleted++;
-            this.emit('file-deleted', { file: f.file, size: f.size, current: deleted, total: oldFiles.length });
+            await fs.promises.unlink(f.path);
+            deletedCount++;
+            this.emit('file-deleted', { ...f, current: deletedCount, total: oldFiles.length });
           } catch (err) {
-            this.emit('file-error', { file: f.file, error: err });
+            this.emit('file-error', { file: f.path, error: err });
           }
         }
       }
 
-      this.emit('cleanup-complete', { files: oldFiles, deleted: confirm ? oldFiles.length : 0 });
+      this.emit('cleanup-complete', {
+        files: oldFiles,
+        deletedCount,
+        confirm
+      });
+
     } catch (err) {
       this.emit('error', err);
     }
@@ -49,14 +58,17 @@ export class Cleanup extends EventEmitter {
   async _getAllFiles(dir) {
     let results = [];
     const list = await fs.promises.readdir(dir, { withFileTypes: true });
+
     for (const entry of list) {
       const fullPath = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
         results = results.concat(await this._getAllFiles(fullPath));
       } else if (entry.isFile()) {
         results.push(fullPath);
       }
     }
+
     return results;
   }
 }
